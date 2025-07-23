@@ -1,6 +1,6 @@
 #_______________________________________________________________________________________________________________
 
-# evaluation.py
+# inference.py
 import lpips
 from torchvision.models import inception_v3
 from scipy.linalg import sqrtm
