@@ -1,6 +1,6 @@
 #_________________________________________________________________________________________________
 
-# fastMCTD.py
+# MCTD.py
 import threading
 import queue
 import time
