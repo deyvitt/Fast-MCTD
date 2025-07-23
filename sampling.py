@@ -1,6 +1,6 @@
 #______________________________________________________________________________________________________
 
-# evaluation.py
+# sampling.py
 class AdaptiveFastMCTDSampler(FastMCTDSampler):
     """Adaptive sampler with dynamic resource allocation"""
     
