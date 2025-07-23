@@ -260,3 +260,89 @@ def run_mor_sampling_experiment():
 if __name__ == "__main__":
     results = run_mor_sampling_experiment()
 
+## Hardware Requirements
+
+### Minimum Requirements
+- **CPU**: 4+ cores, 2.5GHz+
+- **RAM**: 16GB (32GB recommended)
+- **GPU**: NVIDIA GTX 1660 or better (6GB VRAM)
+- **Storage**: 50GB free space (SSD recommended)
+- **Python**: 3.8+
+
+### Recommended Requirements
+- **CPU**: 8+ cores, 3.0GHz+ (Intel i7/i9 or AMD Ryzen 7/9)
+- **RAM**: 64GB+ for large-scale training
+- **GPU**: NVIDIA RTX 3080/4080 or better (12GB+ VRAM)
+- **Storage**: 200GB+ SSD with high read/write speeds
+- **Multiple GPUs**: For distributed training
+
+### Cloud Recommendations
+- **AWS**: p3.2xlarge or p4d.xlarge instances
+- **Google Cloud**: n1-standard-8 with V100 or A100 GPUs
+- **Azure**: Standard_NC24rs_v3 or Standard_ND96asr_v4
+
+## Benefits of MoR Integration
+
+### 1. **Adaptive Computation**
+- Complex diffusion states get more computational resources
+- Simple states are processed quickly
+- Dynamic resource allocation based on real-time complexity analysis
+
+### 2. **Reduced Redundancy**
+- MoR routers prevent unnecessary duplicate computations
+- Intelligent caching of similar diffusion states
+- Optimal exploration vs exploitation balance
+
+### 3. **Improved Quality-Speed Trade-off**
+- High-quality outputs for complex regions
+- Fast processing for simple regions
+- Complexity-aware early stopping
+
+### 4. **Memory Efficiency**
+- Prevents excessive tree growth in simple regions
+- Focuses memory usage on complex, high-value states
+- Adaptive caching strategies
+
+The integration of MoR into Fast-MCTD creates a sophisticated adaptive system that automatically balances computational efficiency with generation quality, making it ideal for real-time applications where both speed and quality matter.
+
+Steps to Integrate Mixture of Recursions into Fast-MCTD
+
+
+Dynamic Recursion Depth Assignment:
+
+Implement a routing mechanism that assigns recursion depths dynamically based on the complexity of the tokens being processed. This allows the model to focus computational resources on more challenging tokens, optimizing the overall inference process.
+
+
+
+KV Caching Strategy:
+
+Develop a key-value (KV) caching strategy that efficiently stores and utilizes KV pairs for attention at each recursive step. This strategy should ensure that the KV pairs are relevant to the current recursion depth, minimizing the risk of mismatches that could degrade performance.
+
+
+
+Integration with U-Net and VAE:
+
+Modify the U-Net architecture to accommodate the recursive structure of MoR. This could involve adjusting the skip connections to allow for recursive processing of features, ensuring that the model can leverage both the diffusion process and the recursive inference effectively.
+The VAE can be adapted to incorporate the recursive mixture estimation, allowing it to iteratively refine its latent representations based on the dynamically assigned recursion depths.
+
+
+
+Parallel Processing:
+
+Ensure that the Fast-MCTD framework supports parallel processing of the recursive steps. This can be achieved by structuring the tree search to allow multiple branches to be explored simultaneously, leveraging the efficiency gains from both the Fast-MCTD and MoR techniques.
+
+
+
+Performance Evaluation:
+
+After integration, conduct thorough testing to evaluate the performance of the combined model. This should include comparisons against baseline models to assess improvements in speed, accuracy, and resource utilization.
+
+
+
+Iterative Refinement:
+
+Based on the performance evaluation, iteratively refine the integration of MoR into Fast-MCTD. This may involve adjusting the routing mechanism, optimizing the KV caching strategy, or fine-tuning the architecture of the U-Net and VAE components.
+
+
+
+By following these steps, the integration of Mixture of Recursions into the Fast-MCTD algorithm can enhance its efficiency and effectiveness, allowing for improved performance in real-time applications while maintaining the advantages of both diffusion models and tree-based search methodologies.
