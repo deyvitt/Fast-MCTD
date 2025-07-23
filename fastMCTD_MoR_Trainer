@@ -1,0 +1,706 @@
+#_____________________________________________________________________________________________________
+
+# fastMCTD_MoR_Trainer (sample code)
+"""Adapt these codes to become your MoR router component in your FastMCTD codes"""
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.optim import AdamW
+from torch.optim.lr_scheduler import CosineAnnealingLR, ReduceLROnPlateau
+from typing import Dict, List, Optional, Tuple, Any
+import wandb
+import time
+import numpy as np
+from collections import defaultdict
+import matplotlib.pyplot as plt
+from pathlib import Path
+
+class MoRDiffusionTrainingManager:
+    """Training manager for MoR routers in Fast-MCTD diffusion models"""
+    
+    def __init__(self, 
+                 mor_system: MoRFastMCTDSampler,
+                 base_lr: float = 1e-4,
+                 router_lr: float = 5e-4,
+                 aux_loss_weight: float = 0.02,
+                 complexity_loss_weight: float = 0.01,
+                 efficiency_loss_weight: float = 0.015,
+                 target_recursion_rate: float = 0.4,
+                 gradient_clip_norm: float = 1.0,
+                 warmup_steps: int = 1000,
+                 device: str = 'cuda'):
+        
+        self.mor_system = mor_system
+        self.device = device
+        self.aux_loss_weight = aux_loss_weight
+        self.complexity_loss_weight = complexity_loss_weight
+        self.efficiency_loss_weight = efficiency_loss_weight
+        self.target_recursion_rate = target_recursion_rate
+        self.gradient_clip_norm = gradient_clip_norm
+        self.warmup_steps = warmup_steps
+        
+        # Separate parameters for different components
+        self._setup_optimizers(base_lr, router_lr)
+        self._setup_schedulers()
+        
+        # Training metrics tracking
+        self.training_metrics = defaultdict(list)
+        self.step_count = 0
+        self.best_efficiency = 0.0
+        
+        # Complexity targets for different timesteps
+        self.timestep_complexity_targets = self._create_timestep_targets()
+        
+    def _setup_optimizers(self, base_lr: float, router_lr: float):
+        """Setup separate optimizers for different component types"""
+        
+        # Categorize parameters
+        router_params = []
+        unet_params = []
+        vae_params = []
+        
+        # Collect router parameters
+        if hasattr(self.mor_system, 'mor_config') and 'router' in str(type(self.mor_system.unet)):
+            for name, param in self.mor_system.unet.named_parameters():
+                if 'router' in name or 'mor' in name.lower():
+                    router_params.append(param)
+                else:
+                    unet_params.append(param)
+        
+        # VAE parameters (if training VAE)
+        for name, param in self.mor_system.vae.named_parameters():
+            vae_params.append(param)
+        
+        # Create optimizers
+        self.router_optimizer = AdamW(
+            router_params, 
+            lr=router_lr, 
+            weight_decay=1e-5,
+            betas=(0.9, 0.999)
+        )
+        
+        self.unet_optimizer = AdamW(
+            unet_params, 
+            lr=base_lr, 
+            weight_decay=1e-4,
+            betas=(0.9, 0.95)
+        )
+        
+        self.vae_optimizer = AdamW(
+            vae_params, 
+            lr=base_lr * 0.5,  # Lower learning rate for VAE
+            weight_decay=1e-4,
+            betas=(0.9, 0.95)
+        )
+        
+        print(f"Setup optimizers - Router params: {len(router_params)}, "
+              f"UNet params: {len(unet_params)}, VAE params: {len(vae_params)}")
+    
+    def _setup_schedulers(self):
+        """Setup learning rate schedulers"""
+        self.router_scheduler = CosineAnnealingLR(
+            self.router_optimizer, 
+            T_max=10000,
+            eta_min=1e-6
+        )
+        
+        self.unet_scheduler = ReduceLROnPlateau(
+            self.unet_optimizer,
+            mode='min',
+            factor=0.5,
+            patience=500,
+            min_lr=1e-6
+        )
+        
+        self.vae_scheduler = ReduceLROnPlateau(
+            self.vae_optimizer,
+            mode='min',
+            factor=0.7,
+            patience=300,
+            min_lr=1e-7
+        )
+    
+    def _create_timestep_targets(self) -> Dict[int, float]:
+        """Create complexity targets based on timestep"""
+        targets = {}
+        for t in range(0, 1001, 50):  # Every 50 timesteps
+            if t < 100:  # Near end of diffusion - should be simpler
+                targets[t] = 0.2 + (t / 100) * 0.3  # 0.2 to 0.5
+            elif t < 500:  # Middle phase - moderate complexity
+                targets[t] = 0.5 + ((t - 100) / 400) * 0.3  # 0.5 to 0.8
+            else:  # Early phase - high complexity
+                targets[t] = 0.8 + ((t - 500) / 500) * 0.2  # 0.8 to 1.0
+        return targets
+    
+    def compute_auxiliary_losses(self, routing_decisions: List[Dict]) -> Dict[str, torch.Tensor]:
+        """Compute various auxiliary losses for MoR training"""
+        
+        aux_losses = {}
+        
+        if not routing_decisions:
+            return {
+                'routing_balance_loss': torch.tensor(0.0, device=self.device),
+                'complexity_alignment_loss': torch.tensor(0.0, device=self.device),
+                'efficiency_loss': torch.tensor(0.0, device=self.device),
+                'timestep_awareness_loss': torch.tensor(0.0, device=self.device)
+            }
+        
+        # 1. Routing Balance Loss - encourage balanced routing decisions
+        recursion_rates = []
+        for decision in routing_decisions:
+            if 'routing_probs' in decision:
+                probs = decision['routing_probs']
+                if probs.dim() > 1:
+                    recurse_prob = probs[:, 0].mean().item()  # Probability of recursion
+                else:
+                    recurse_prob = probs[0].item()
+                recursion_rates.append(recurse_prob)
+        
+        if recursion_rates:
+            avg_recursion_rate = np.mean(recursion_rates)
+            routing_balance_loss = (avg_recursion_rate - self.target_recursion_rate) ** 2
+            aux_losses['routing_balance_loss'] = torch.tensor(
+                routing_balance_loss, device=self.device, requires_grad=True
+            )
+        else:
+            aux_losses['routing_balance_loss'] = torch.tensor(0.0, device=self.device)
+        
+        # 2. Complexity Alignment Loss - ensure routing aligns with actual complexity
+        complexity_alignment_loss = 0.0
+        for decision in routing_decisions:
+            if 'complexity' in decision and 'timestep' in decision:
+                actual_complexity = decision['complexity']
+                timestep = decision['timestep']
+                
+                # Get target complexity for this timestep
+                target_complexity = self._get_target_complexity(timestep)
+                complexity_alignment_loss += (actual_complexity - target_complexity) ** 2
+        
+        if routing_decisions:
+            complexity_alignment_loss /= len(routing_decisions)
+        
+        aux_losses['complexity_alignment_loss'] = torch.tensor(
+            complexity_alignment_loss, device=self.device, requires_grad=True
+        )
+        
+        # 3. Efficiency Loss - encourage efficient computation usage
+        efficiency_scores = []
+        for decision in routing_decisions:
+            if 'reward' in decision and 'complexity' in decision:
+                reward = decision['reward']
+                complexity = max(decision['complexity'], 0.1)  # Avoid division by zero
+                efficiency = reward / complexity
+                efficiency_scores.append(efficiency)
+        
+        if efficiency_scores:
+            # Encourage high efficiency (high reward, low complexity)
+            avg_efficiency = np.mean(efficiency_scores)
+            target_efficiency = 2.0  # Target efficiency score
+            efficiency_loss = max(0, target_efficiency - avg_efficiency)
+            aux_losses['efficiency_loss'] = torch.tensor(
+                efficiency_loss, device=self.device, requires_grad=True
+            )
+        else:
+            aux_losses['efficiency_loss'] = torch.tensor(0.0, device=self.device)
+        
+        # 4. Timestep Awareness Loss - ensure router considers timestep appropriately
+        timestep_awareness_loss = 0.0
+        timestep_groups = defaultdict(list)
+        
+        for decision in routing_decisions:
+            if 'timestep' in decision and 'routing_probs' in decision:
+                timestep = decision['timestep']
+                probs = decision['routing_probs']
+                if probs.dim() > 1:
+                    recurse_prob = probs[:, 0].mean().item()
+                else:
+                    recurse_prob = probs[0].item()
+                
+                # Group by timestep ranges
+                if timestep < 100:
+                    timestep_groups['early'].append(recurse_prob)
+                elif timestep < 500:
+                    timestep_groups['middle'].append(recurse_prob)
+                else:
+                    timestep_groups['late'].append(recurse_prob)
+        
+        # Early timesteps should have lower recursion rates
+        # Late timesteps should have higher recursion rates
+        if 'early' in timestep_groups and 'late' in timestep_groups:
+            early_avg = np.mean(timestep_groups['early'])
+            late_avg = np.mean(timestep_groups['late'])
+            
+            # We want late > early for recursion probability
+            timestep_awareness_loss = max(0, early_avg - late_avg + 0.2)
+        
+        aux_losses['timestep_awareness_loss'] = torch.tensor(
+            timestep_awareness_loss, device=self.device, requires_grad=True
+        )
+        
+        return aux_losses
+    
+    def _get_target_complexity(self, timestep: int) -> float:
+        """Get target complexity for a given timestep"""
+        # Find closest timestep in targets
+        closest_t = min(self.timestep_complexity_targets.keys(), 
+                       key=lambda x: abs(x - timestep))
+        return self.timestep_complexity_targets[closest_t]
+    
+    def training_step(self, 
+                     batch_data: Dict[str, torch.Tensor], 
+                     criterion: Optional[nn.Module] = None) -> Dict[str, float]:
+        """Single training step for MoR diffusion model"""
+        
+        self.step_count += 1
+        
+        # Extract batch data
+        if 'images' in batch_data:
+            images = batch_data['images'].to(self.device)
+            batch_size = images.shape[0]
+        else:
+            batch_size = batch_data.get('batch_size', 4)
+            images = None
+        
+        # Warmup learning rate
+        if self.step_count <= self.warmup_steps:
+            warmup_factor = self.step_count / self.warmup_steps
+            for param_group in self.router_optimizer.param_groups:
+                param_group['lr'] = param_group['lr'] * warmup_factor
+        
+        # Generate samples and collect routing decisions
+        routing_decisions = []
+        generation_start = time.time()
+        
+        try:
+            # Use MoR sampling to generate samples and collect routing data
+            with torch.enable_grad():  # Enable gradients for training
+                samples = self.mor_system.mor_sample(
+                    batch_size=batch_size,
+                    num_parallel_batches=5,  # Reduced for training
+                    num_sparse_iterations=3,
+                    complexity_budget=1.0,
+                    collect_routing_data=True  # Flag to collect routing decisions
+                )
+                
+                # Extract routing decisions from the sampling process
+                if hasattr(self.mor_system, '_last_routing_decisions'):
+                    routing_decisions = self.mor_system._last_routing_decisions
+            
+            generation_time = time.time() - generation_start
+            
+            # Compute main loss (if we have target images)
+            main_loss = torch.tensor(0.0, device=self.device)
+            if images is not None and samples is not None:
+                if criterion is None:
+                    # Use MSE loss as default
+                    criterion = nn.MSELoss()
+                
+                # Ensure same shape
+                if samples.shape != images.shape:
+                    samples = F.interpolate(samples, size=images.shape[-2:], mode='bilinear')
+                
+                main_loss = criterion(samples, images)
+            
+            # Compute auxiliary losses
+            aux_losses = self.compute_auxiliary_losses(routing_decisions)
+            
+            # Combine losses
+            total_loss = main_loss
+            total_loss += self.aux_loss_weight * aux_losses['routing_balance_loss']
+            total_loss += self.complexity_loss_weight * aux_losses['complexity_alignment_loss']
+            total_loss += self.efficiency_loss_weight * aux_losses['efficiency_loss']
+            total_loss += self.aux_loss_weight * aux_losses['timestep_awareness_loss']
+            
+            # Backward pass
+            self.router_optimizer.zero_grad()
+            self.unet_optimizer.zero_grad()
+            self.vae_optimizer.zero_grad()
+            
+            if total_loss.requires_grad:
+                total_loss.backward()
+                
+                # Gradient clipping
+                if self.gradient_clip_norm > 0:
+                    torch.nn.utils.clip_grad_norm_(
+                        [p for group in [self.router_optimizer.param_groups,
+                                       self.unet_optimizer.param_groups] 
+                         for param_group in group for p in param_group['params']], 
+                        max_norm=self.gradient_clip_norm
+                    )
+                
+                # Optimizer steps
+                self.router_optimizer.step()
+                self.unet_optimizer.step()
+                if images is not None:  # Only update VAE if we have image data
+                    self.vae_optimizer.step()
+            
+            # Update schedulers
+            self.router_scheduler.step()
+            if self.step_count % 100 == 0:  # Update other schedulers less frequently
+                self.unet_scheduler.step(total_loss.item())
+                self.vae_scheduler.step(total_loss.item())
+            
+            # Compute metrics
+            metrics = {
+                'main_loss': main_loss.item(),
+                'routing_balance_loss': aux_losses['routing_balance_loss'].item(),
+                'complexity_alignment_loss': aux_losses['complexity_alignment_loss'].item(),
+                'efficiency_loss': aux_losses['efficiency_loss'].item(),
+                'timestep_awareness_loss': aux_losses['timestep_awareness_loss'].item(),
+                'total_loss': total_loss.item(),
+                'generation_time': generation_time,
+                'router_lr': self.router_optimizer.param_groups[0]['lr'],
+                'unet_lr': self.unet_optimizer.param_groups[0]['lr'],
+                'num_routing_decisions': len(routing_decisions)
+            }
+            
+            # Add routing statistics
+            if routing_decisions:
+                recursion_rates = [d.get('recurse_prob', 0.0) for d in routing_decisions]
+                complexities = [d.get('complexity', 0.0) for d in routing_decisions]
+                
+                if recursion_rates:
+                    metrics['avg_recursion_rate'] = np.mean(recursion_rates)
+                    metrics['std_recursion_rate'] = np.std(recursion_rates)
+                
+                if complexities:
+                    metrics['avg_complexity'] = np.mean(complexities)
+                    metrics['std_complexity'] = np.std(complexities)
+            
+            # Update training metrics
+            for key, value in metrics.items():
+                self.training_metrics[key].append(value)
+            
+            return metrics
+            
+        except Exception as e:
+            print(f"Training step failed: {e}")
+            return {
+                'main_loss': float('inf'),
+                'total_loss': float('inf'),
+                'error': str(e)
+            }
+    
+    def train_epoch(self, 
+                   dataloader, 
+                   epoch: int,
+                   log_interval: int = 50,
+                   save_interval: int = 500) -> Dict[str, float]:
+        """Train for one epoch"""
+        
+        epoch_metrics = defaultdict(list)
+        
+        for batch_idx, batch_data in enumerate(dataloader):
+            step_metrics = self.training_step(batch_data)
+            
+            # Accumulate metrics
+            for key, value in step_metrics.items():
+                if isinstance(value, (int, float)) and not np.isnan(value):
+                    epoch_metrics[key].append(value)
+            
+            # Logging
+            if batch_idx % log_interval == 0:
+                print(f"Epoch {epoch}, Batch {batch_idx}/{len(dataloader)}")
+                print(f"  Total Loss: {step_metrics.get('total_loss', 0):.4f}")
+                print(f"  Recursion Rate: {step_metrics.get('avg_recursion_rate', 0):.3f}")
+                print(f"  Complexity: {step_metrics.get('avg_complexity', 0):.3f}")
+                print(f"  Generation Time: {step_metrics.get('generation_time', 0):.2f}s")
+                
+                # Log to wandb if available
+                if wandb.run is not None:
+                    wandb.log({
+                        'step': self.step_count,
+                        'epoch': epoch,
+                        'batch': batch_idx,
+                        **step_metrics
+                    })
+            
+            # Save checkpoint
+            if batch_idx % save_interval == 0 and batch_idx > 0:
+                self.save_checkpoint(epoch, batch_idx)
+        
+        # Compute epoch averages
+        epoch_averages = {}
+        for key, values in epoch_metrics.items():
+            if values:
+                epoch_averages[f'epoch_avg_{key}'] = np.mean(values)
+        
+        return epoch_averages
+    
+    def evaluate(self, eval_dataloader, num_samples: int = 100) -> Dict[str, float]:
+        """Evaluate the MoR system"""
+        
+        self.mor_system.eval()
+        eval_metrics = defaultdict(list)
+        
+        with torch.no_grad():
+            for batch_idx, batch_data in enumerate(eval_dataloader):
+                if batch_idx * batch_data.get('batch_size', 4) >= num_samples:
+                    break
+                
+                # Generate samples
+                start_time = time.time()
+                samples = self.mor_system.mor_sample(
+                    batch_size=batch_data.get('batch_size', 4),
+                    num_parallel_batches=8,
+                    num_sparse_iterations=5,
+                    complexity_budget=1.0,
+                    collect_routing_data=True
+                )
+                generation_time = time.time() - start_time
+                
+                # Collect routing statistics
+                if hasattr(self.mor_system, '_last_routing_decisions'):
+                    routing_decisions = self.mor_system._last_routing_decisions
+                    
+                    if routing_decisions:
+                        recursion_rates = [d.get('recurse_prob', 0.0) for d in routing_decisions]
+                        complexities = [d.get('complexity', 0.0) for d in routing_decisions]
+                        
+                        eval_metrics['recursion_rate'].extend(recursion_rates)
+                        eval_metrics['complexity'].extend(complexities)
+                
+                eval_metrics['generation_time'].append(generation_time)
+        
+        # Compute evaluation statistics
+        eval_stats = {}
+        for key, values in eval_metrics.items():
+            if values:
+                eval_stats[f'eval_{key}_mean'] = np.mean(values)
+                eval_stats[f'eval_{key}_std'] = np.std(values)
+        
+        self.mor_system.train()
+        return eval_stats
+    
+    def save_checkpoint(self, epoch: int, batch_idx: int = 0):
+        """Save training checkpoint"""
+        checkpoint = {
+            'epoch': epoch,
+            'batch_idx': batch_idx,
+            'step_count': self.step_count,
+            'model_state_dict': {
+                'unet': self.mor_system.unet.state_dict(),
+                'vae': self.mor_system.vae.state_dict()
+            },
+            'optimizer_state_dict': {
+                'router': self.router_optimizer.state_dict(),
+                'unet': self.unet_optimizer.state_dict(),
+                'vae': self.vae_optimizer.state_dict()
+            },
+            'scheduler_state_dict': {
+                'router': self.router_scheduler.state_dict(),
+                'unet': self.unet_scheduler.state_dict(),
+                'vae': self.vae_scheduler.state_dict()
+            },
+            'training_metrics': dict(self.training_metrics),
+            'best_efficiency': self.best_efficiency
+        }
+        
+        checkpoint_path = f'checkpoint_epoch_{epoch}_batch_{batch_idx}.pt'
+        torch.save(checkpoint, checkpoint_path)
+        print(f"Checkpoint saved: {checkpoint_path}")
+    
+    def load_checkpoint(self, checkpoint_path: str):
+        """Load training checkpoint"""
+        checkpoint = torch.load(checkpoint_path, map_location=self.device)
+        
+        # Load model states
+        self.mor_system.unet.load_state_dict(checkpoint['model_state_dict']['unet'])
+        self.mor_system.vae.load_state_dict(checkpoint['model_state_dict']['vae'])
+        
+        # Load optimizer states
+        self.router_optimizer.load_state_dict(checkpoint['optimizer_state_dict']['router'])
+        self.unet_optimizer.load_state_dict(checkpoint['optimizer_state_dict']['unet'])
+        self.vae_optimizer.load_state_dict(checkpoint['optimizer_state_dict']['vae'])
+        
+        # Load scheduler states
+        self.router_scheduler.load_state_dict(checkpoint['scheduler_state_dict']['router'])
+        self.unet_scheduler.load_state_dict(checkpoint['scheduler_state_dict']['unet'])
+        self.vae_scheduler.load_state_dict(checkpoint['scheduler_state_dict']['vae'])
+        
+        # Load training state
+        self.step_count = checkpoint['step_count']
+        self.training_metrics = defaultdict(list, checkpoint['training_metrics'])
+        self.best_efficiency = checkpoint['best_efficiency']
+        
+        print(f"Checkpoint loaded from {checkpoint_path}")
+        print(f"Resuming from epoch {checkpoint['epoch']}, step {self.step_count}")
+
+class MoRTrainingDataset(torch.utils.data.Dataset):
+    """Dataset for training MoR diffusion models"""
+    
+    def __init__(self, 
+                 image_paths: List[str], 
+                 image_size: int = 256,
+                 augment: bool = True):
+        self.image_paths = image_paths
+        self.image_size = image_size
+        self.augment = augment
+        
+        # Setup transforms
+        transforms_list = [
+            torchvision.transforms.Resize((image_size, image_size)),
+            torchvision.transforms.ToTensor(),
+            torchvision.transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5])
+        ]
+        
+        if augment:
+            transforms_list.insert(-2, torchvision.transforms.RandomHorizontalFlip(0.5))
+            transforms_list.insert(-2, torchvision.transforms.ColorJitter(0.1, 0.1, 0.1, 0.05))
+        
+        self.transform = torchvision.transforms.Compose(transforms_list)
+    
+    def __len__(self):
+        return len(self.image_paths)
+    
+    def __getitem__(self, idx):
+        image_path = self.image_paths[idx]
+        image = PIL.Image.open(image_path).convert('RGB')
+        image = self.transform(image)
+        
+        return {
+            'images': image,
+            'batch_size': 1,
+            'image_path': image_path
+        }
+
+def train_mor_fast_mctd(config: Dict[str, Any]):
+    """Main training function for MoR Fast-MCTD"""
+    
+    # Initialize system
+    print("🚀 Initializing MoR Fast-MCTD system...")
+    mor_system = create_mor_fast_mctd_system()
+    
+    # Setup training manager
+    training_manager = MoRDiffusionTrainingManager(
+        mor_system=mor_system,
+        base_lr=config.get('base_lr', 1e-4),
+        router_lr=config.get('router_lr', 5e-4),
+        aux_loss_weight=config.get('aux_loss_weight', 0.02),
+        target_recursion_rate=config.get('target_recursion_rate', 0.4),
+        device=config.get('device', 'cuda')
+    )
+    
+    # Setup data
+    print("📊 Setting up datasets...")
+    image_paths = config.get('image_paths', [])
+    
+    if not image_paths:
+        print("⚠️  No image paths provided, using synthetic data for demonstration")
+        # Create synthetic dataset for demonstration
+        train_dataset = torch.utils.data.TensorDataset(
+            torch.randn(1000, 3, 256, 256)
+        )
+        eval_dataset = torch.utils.data.TensorDataset(
+            torch.randn(100, 3, 256, 256)
+        )
+    else:
+        # Split data
+        split_idx = int(len(image_paths) * 0.9)
+        train_paths = image_paths[:split_idx]
+        eval_paths = image_paths[split_idx:]
+        
+        train_dataset = MoRTrainingDataset(train_paths, augment=True)
+        eval_dataset = MoRTrainingDataset(eval_paths, augment=False)
+    
+    train_dataloader = torch.utils.data.DataLoader(
+        train_dataset, 
+        batch_size=config.get('batch_size', 4),
+        shuffle=True,
+        num_workers=config.get('num_workers', 4),
+        pin_memory=True
+    )
+    
+    eval_dataloader = torch.utils.data.DataLoader(
+        eval_dataset,
+        batch_size=config.get('eval_batch_size', 4),
+        shuffle=False,
+        num_workers=2,
+        pin_memory=True
+    )
+    
+    # Initialize wandb if requested
+    if config.get('use_wandb', False):
+        wandb.init(
+            project="mor-fast-mctd",
+            config=config,
+            name=f"mor_training_{time.strftime('%Y%m%d_%H%M%S')}"
+        )
+    
+    # Training loop
+    print("🏋️ Starting training...")
+    num_epochs = config.get('num_epochs', 10)
+    eval_interval = config.get('eval_interval', 2)
+    
+    for epoch in range(num_epochs):
+        print(f"\n=== Epoch {epoch+1}/{num_epochs} ===")
+        
+        # Training
+        epoch_metrics = training_manager.train_epoch(
+            train_dataloader, 
+            epoch,
+            log_interval=config.get('log_interval', 50),
+            save_interval=config.get('save_interval', 500)
+        )
+        
+        print(f"Epoch {epoch+1} Summary:")
+        for key, value in epoch_metrics.items():
+            if isinstance(value, (int, float)):
+                print(f"  {key}: {value:.4f}")
+        
+        # Evaluation
+        if (epoch + 1) % eval_interval == 0:
+            print(f"🔍 Evaluating at epoch {epoch+1}...")
+            eval_metrics = training_manager.evaluate(eval_dataloader)
+            
+            print("Evaluation Results:")
+            for key, value in eval_metrics.items():
+                print(f"  {key}: {value:.4f}")
+            
+            # Log to wandb
+            if wandb.run is not None:
+                wandb.log({
+                    'epoch': epoch,
+                    **epoch_metrics,
+                    **eval_metrics
+                })
+        
+        # Save checkpoint
+        training_manager.save_checkpoint(epoch)
+    
+    print("🎉 Training completed!")
+    
+    # Final evaluation and save
+    final_eval = training_manager.evaluate(eval_dataloader, num_samples=200)
+    print("\n📊 Final Evaluation:")
+    for key, value in final_eval.items():
+        print(f"  {key}: {value:.4f}")
+    
+    # Save final model
+    final_checkpoint_path = f'final_mor_fast_mctd_{time.strftime("%Y%m%d_%H%M%S")}.pt'
+    training_manager.save_checkpoint(num_epochs - 1)
+    print(f"Final model saved: {final_checkpoint_path}")
+    
+    return training_manager, final_eval
+
+# Usage example
+if __name__ == "__main__":
+    config = {
+        'base_lr': 1e-4,
+        'router_lr': 5e-4,
+        'aux_loss_weight': 0.02,
+        'target_recursion_rate': 0.4,
+        'batch_size': 4,
+        'num_epochs': 20,
+        'eval_interval': 2,
+        'log_interval': 25,
+        'save_interval': 250,
+        'use_wandb': True,
+        'device': 'cuda' if torch.cuda.is_available() else 'cpu',
+        'num_workers': 4,
+        # 'image_paths': ['path/to/your/images/...']  # Add your image paths
+    }
+    
+    training_manager, final_metrics = train_mor_fast_mctd(config)
+
+    #_______________________________________________________________________________________________________
