@@ -1,0 +1,41 @@
+version: '3.8'
+
+services:
+  fast-mctd:
+    build: .
+    container_name: fast-mctd-mor
+    volumes:
+      - .:/app
+      - ./data:/app/data
+      - ./results:/app/results
+    ports:
+      - "8888:8888"  # Jupyter
+      - "6006:6006"  # TensorBoard
+      - "8080:8080"  # WandB
+    environment:
+      - CUDA_VISIBLE_DEVICES=0
+      - PYTHONPATH=/app
+    runtime: nvidia  # For GPU support
+    stdin_open: true
+    tty: true
+    command: /bin/bash
+
+  jupyter:
+    build: .
+    container_name: fast-mctd-jupyter
+    volumes:
+      - .:/app
+    ports:
+      - "8889:8888"
+    environment:
+      - JUPYTER_ENABLE_LAB=yes
+    command: jupyter lab --ip=0.0.0.0 --port=8888 --no-browser --allow-root --NotebookApp.token=''
+
+  tensorboard:
+    build: .
+    container_name: fast-mctd-tensorboard
+    volumes:
+      - ./logs:/app/logs
+    ports:
+      - "6007:6006"
+    command: tensorboard --logdir=/app/logs --host=0.0.0.0 --port=6006
