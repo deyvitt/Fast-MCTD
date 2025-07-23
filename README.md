@@ -157,3 +157,106 @@ Based on the performance evaluation, iteratively refine the integration of MoR i
 
 
 By following these steps, the integration of Mixture of Recursions into the Fast-MCTD algorithm can enhance its efficiency and effectiveness, allowing for improved performance in real-time applications while maintaining the advantages of both diffusion models and tree-based search methodologies.
+
+The following are just examples of how you can use these:
+
+# Complete example of MoR-Enhanced Fast-MCTD usage
+def create_mor_fast_mctd_system():
+    """Create complete MoR-Enhanced Fast-MCTD system"""
+    
+    # Initialize components
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    
+    # VAE
+    vae = EnhancedVAE(input_channels=3, latent_dim=128)
+    
+    # MoR-Enhanced UNet
+    unet = MoREnhancedUNet(
+        input_channels=128,
+        model_channels=256,
+        out_channels=128,
+        mor_layers=[0, 1, 2, 3]  # Apply MoR to first 4 layers
+    )
+    
+    # Noise schedule
+    noise_schedule = create_noise_schedule(1000, 'cosine')
+    
+    # MoR configuration
+    mor_config = {
+        'max_recursions': 4,
+        'complexity_threshold': 0.6,
+        'hidden_dim': 256,
+        'adaptive_depth': True,
+        'cache_computations': True
+    }
+    
+    # MoR-Enhanced Sampler
+    sampler = MoRFastMCTDSampler(
+        vae=vae,
+        unet=unet,
+        noise_schedule=noise_schedule,
+        num_workers=4,
+        device=device,
+        mor_config=mor_config
+    )
+    
+    return sampler
+
+def run_mor_sampling_experiment():
+    """Run MoR sampling experiment with comprehensive evaluation"""
+    
+    # Create system
+    sampler = create_mor_fast_mctd_system()
+    
+    # Sampling configurations with different complexity budgets
+    configs = [
+        {'name': 'efficient', 'complexity_budget': 0.5, 'parallel_batches': 5, 'sparse_iterations': 3},
+        {'name': 'balanced', 'complexity_budget': 1.0, 'parallel_batches': 10, 'sparse_iterations': 5},
+        {'name': 'high_quality', 'complexity_budget': 1.5, 'parallel_batches': 15, 'sparse_iterations': 8}
+    ]
+    
+    results = {}
+    
+    for config in configs:
+        print(f"\n=== Running {config['name']} configuration ===")
+        
+        start_time = time.time()
+        
+        # Generate samples
+        samples = sampler.mor_sample(
+            batch_size=4,
+            num_parallel_batches=config['parallel_batches'],
+            num_sparse_iterations=config['sparse_iterations'],
+            complexity_budget=config['complexity_budget']
+        )
+        
+        generation_time = time.time() - start_time
+        
+        # Get comprehensive statistics
+        stats = sampler.get_comprehensive_stats()
+        
+        results[config['name']] = {
+            'samples': samples,
+            'generation_time': generation_time,
+            'mor_stats': stats,
+            'config': config
+        }
+        
+        # Print summary
+        print(f"Generation time: {generation_time:.2f}s")
+        print(f"Recursion rate: {stats['complexity_tracker']['mean_efficiency']:.3f}")
+        print(f"Complexity trend: {stats['complexity_tracker']['complexity_trend']:.3f}")
+    
+    # Compare configurations
+    print("\n=== Configuration Comparison ===")
+    for name, result in results.items():
+        efficiency = len(result['samples']) / result['generation_time']
+        print(f"{name}: {efficiency:.2f} samples/sec, "
+              f"Quality score: {result['mor_stats']['complexity_tracker']['mean_efficiency']:.3f}")
+    
+    return results
+
+# Usage
+if __name__ == "__main__":
+    results = run_mor_sampling_experiment()
+
