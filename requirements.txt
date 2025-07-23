@@ -1,0 +1,128 @@
+# Core PyTorch and Deep Learning
+torch>=2.0.0
+torchvision>=0.15.0
+torchaudio>=2.0.0
+
+# PyTorch ecosystem
+torch-summary>=1.4.5
+torch-optimizer>=0.3.0
+torch-lr-finder>=0.2.1
+
+# Core Scientific Computing
+numpy>=1.24.0
+scipy>=1.10.0
+scikit-learn>=1.2.0
+
+# Neural Network Utilities
+einops>=0.6.0
+timm>=0.9.0
+
+# Visualization and Plotting
+matplotlib>=3.7.0
+seaborn>=0.12.0
+plotly>=5.14.0
+pillow>=9.5.0
+
+# Progress and Utilities
+tqdm>=4.65.0
+rich>=13.3.0
+click>=8.1.0
+
+# Experiment Tracking and Logging
+wandb>=0.15.0
+tensorboard>=2.13.0
+tensorboardX>=2.6.0
+
+# Image Processing and Computer Vision
+opencv-python>=4.7.0
+imageio>=2.28.0
+imageio-ffmpeg>=0.4.8
+
+# Quality Metrics and Evaluation
+lpips>=0.1.4
+pytorch-fid>=0.3.0
+clean-fid>=0.1.35
+
+# Data Handling
+h5py>=3.8.0
+pandas>=2.0.0
+datasets>=2.12.0
+
+# Acceleration and Optimization
+accelerate>=0.20.0
+deepspeed>=0.9.0
+xformers>=0.0.20
+
+# Memory and Performance
+psutil>=5.9.0
+py-cpuinfo>=9.0.0
+nvidia-ml-py>=12.535.0
+
+# Mathematical and Scientific Libraries
+sympy>=1.12.0
+numba>=0.57.0
+
+# Configuration and Utilities
+omegaconf>=2.3.0
+hydra-core>=1.3.0
+pyyaml>=6.0.0
+
+# Jupyter and Development
+jupyter>=1.0.0
+ipykernel>=6.23.0
+ipywidgets>=8.0.0
+
+# Testing
+pytest>=7.3.0
+pytest-cov>=4.1.0
+
+# Code Quality
+black>=23.3.0
+flake8>=6.0.0
+isort>=5.12.0
+
+# Distributed Computing (Optional)
+ray[tune]>=2.4.0
+optuna>=3.2.0
+
+# Audio/Video Processing (Optional)
+librosa>=0.10.0
+av>=10.0.0
+
+# Additional ML Libraries
+transformers>=4.30.0
+diffusers>=0.17.0
+
+# Memory Profiling and Debugging
+memory-profiler>=0.60.0
+line-profiler>=4.0.0
+
+# Fast Operations
+faiss-cpu>=1.7.4
+# faiss-gpu>=1.7.4  # Uncomment if using GPU FAISS
+
+# Networking and APIs
+requests>=2.31.0
+urllib3>=2.0.0
+
+# System Utilities
+psutil>=5.9.0
+GPUtil>=1.4.0
+
+# Additional Scientific Computing
+astropy>=5.3.0  # For advanced mathematical functions
+networkx>=3.1.0  # For graph operations in tree structures
+
+# Optional: JAX ecosystem (for advanced numerical computing)
+# jax>=0.4.10
+# jaxlib>=0.4.10
+# flax>=0.7.0
+
+# Optional: Advanced optimization libraries
+# optax>=0.1.5
+# chex>=0.1.7
+
+# Development and Documentation
+sphinx>=7.0.0
+sphinx-rtd-theme>=1.2.0
+myst-parser>=2.0.0
