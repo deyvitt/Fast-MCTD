@@ -14,7 +14,8 @@ Parallelized Tree Search for Diffusion Model
 8. [Advanced Optimizations](#advanced-optimizations)
 9. [Practical Applications](#practical-applications)
 10. [Troubleshooting & Best Practices](#troubleshooting--best-practices)
-11. [Downsides of Fast-MCTD]
+11. [Downsides of Fast-MCTD](#cons--of--Fast-MCTD)
+12. [Integrating MoR into Fast-MCTD](#How-to-integrate-Mixture-of-Recursions-into--Fast-MCTD)
 
 ## Introduction & Theory
 
